@@ -1,0 +1,622 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>MRAG Art Factory — VR Model</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #0b0c0e; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; touch-action: none; }
+
+  #overlay {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: #0b0c0e; color: #e8e8ea; z-index: 20;
+    transition: opacity 0.5s ease;
+  }
+  #overlay.hidden { opacity: 0; pointer-events: none; }
+  #overlay h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; margin: 0 0 14px; color: #9aa0a6; text-transform: uppercase; }
+  .bar-track { width: min(280px, 70vw); height: 4px; background: #24262b; border-radius: 4px; overflow: hidden; }
+  .bar-fill { height: 100%; width: 0%; background: linear-gradient(90deg,#4f9dff,#7cc4ff); transition: width 0.15s ease; }
+  #pct { margin-top: 10px; font-size: 12px; color: #6b7076; font-variant-numeric: tabular-nums; }
+  #errbox { margin-top: 16px; max-width: 480px; font-size: 13px; color: #ff8a8a; text-align: center; white-space: pre-wrap; display: none; }
+
+  #hud {
+    position: fixed; z-index: 10;
+    left: calc(14px + env(safe-area-inset-left));
+    bottom: calc(14px + env(safe-area-inset-bottom));
+    color: #cfd2d6; font-size: 12px; background: rgba(20,21,24,0.55);
+    backdrop-filter: blur(6px); border: 1px solid rgba(255,255,255,0.08);
+    padding: 8px 12px; border-radius: 10px; line-height: 1.5; pointer-events: none;
+    transition: opacity 0.4s ease;
+    max-width: min(58vw, 320px);
+  }
+  #hud b { color: #fff; }
+
+  #controls {
+    position: fixed; z-index: 10;
+    right: calc(14px + env(safe-area-inset-right));
+    bottom: calc(14px + env(safe-area-inset-bottom));
+    display: flex; gap: 8px;
+  }
+  #controls button {
+    background: rgba(20,21,24,0.65); border: 1px solid rgba(255,255,255,0.12);
+    color: #e8e8ea; width: 38px; height: 38px; border-radius: 9px;
+    font-size: 15px; cursor: pointer; backdrop-filter: blur(6px);
+    touch-action: manipulation;
+  }
+  #controls button:hover { background: rgba(40,42,46,0.85); }
+
+  #title {
+    position: fixed; z-index: 10;
+    top: calc(14px + env(safe-area-inset-top));
+    left: calc(14px + env(safe-area-inset-left));
+    max-width: min(60vw, 460px);
+    padding: 7px 12px;
+    display: flex; align-items: center;
+  }
+  #title img { height: 24px; width: auto; display: block; }
+
+  #credits {
+    position: fixed; z-index: 10;
+    top: calc(52px + env(safe-area-inset-top));
+    left: calc(14px + env(safe-area-inset-left));
+    max-width: min(70vw, 340px);
+    max-height: calc(100vh - 90px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    overflow-y: auto;
+    color: #cfd2d6; font-size: 12px; line-height: 1.5;
+    background: rgba(20,21,24,0.75); backdrop-filter: blur(6px);
+    border: 1px solid rgba(255,255,255,0.08);
+    padding: 10px 14px; border-radius: 10px;
+    opacity: 0; transform: translateY(-6px); pointer-events: none;
+    transition: opacity 0.25s ease, transform 0.25s ease;
+  }
+
+  @media (pointer: coarse), (max-width: 480px) {
+    #controls button { width: 44px; height: 44px; font-size: 17px; }
+    #title { font-size: 12px; max-width: 66vw; }
+    #hud { font-size: 11px; max-width: 50vw; padding: 7px 10px; }
+    #credits { font-size: 11.5px; max-width: 80vw; }
+  }
+
+  @media (max-width: 360px) {
+    #hud { display: none; }
+  }
+  #credits.visible { opacity: 1; transform: translateY(0); pointer-events: auto; }
+  #credits .credit { margin-top: 9px; }
+  #credits .credit:first-child { margin-top: 0; }
+  #credits .role {
+    color: #9aa0a6; font-size: 10px; text-transform: uppercase;
+    letter-spacing: 0.04em; margin-bottom: 2px;
+  }
+  #credits .name { color: #fff; font-size: 13px; }
+  #credits .name a { color: inherit; text-decoration: none; border-bottom: 1px solid rgba(255,255,255,0.35); }
+  #credits .name a:hover { border-bottom-color: #fff; }
+</style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <div id="title"><img src="assets/logo.png" alt="PixelSpace Lab"></div>
+
+  <div id="credits">
+    <div class="credit">
+      <div class="role">Design</div>
+      <div class="name">ARBE 3030 students, University of Newcastle</div>
+    </div>
+    <div class="credit">
+      <div class="role">Mixed Reality Tools</div>
+      <div class="name">Arkio &amp; Graffiti (HoloLens 2) — <a href="https://pxl.archbe.org/" target="_blank" rel="noopener">PixelSpace Lab</a></div>
+    </div>
+    <div class="credit">
+      <div class="role">Client</div>
+      <div class="name">Maitland Regional Art Gallery — Art Factory redesign</div>
+    </div>
+    <div class="credit">
+      <div class="role">Viewer Development</div>
+      <div class="name"><a href="https://www.linkedin.com/in/apdv" target="_blank" rel="noopener">Amanda Viray</a> | PixelSpace Lab</div>
+    </div>
+    <div class="credit">
+      <div class="role">Model Stats</div>
+      <div class="name" id="credits-stats"></div>
+    </div>
+  </div>
+
+  <div id="hud">
+    <span id="hud-instructions">drag to orbit | scroll to zoom | right-drag to pan</span>
+  </div>
+
+  <div id="controls">
+    <button id="btn-credits" title="Credits">&#9432;</button>
+    <button id="btn-reset" title="Reset view">&#8634;</button>
+    <button id="btn-wire" title="Toggle wireframe">&#9638;</button>
+    <button id="btn-vr" title="Enter VR" style="display:none; font-size:11px; font-weight:700;">VR</button>
+    <button id="btn-fs" title="Fullscreen">&#9974;</button>
+  </div>
+
+  <div id="overlay">
+    <h1>Loading model</h1>
+    <div class="bar-track"><div class="bar-fill" id="bar"></div></div>
+    <div id="pct">0%</div>
+    <div id="errbox"></div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/",
+      "three-mesh-bvh": "https://unpkg.com/three-mesh-bvh@0.9.16/src/index.js"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+    import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+    import { XRHandModelFactory } from "three/addons/webxr/XRHandModelFactory.js";
+    import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from "three-mesh-bvh";
+
+    const MODEL_URL = "./models/render.glb";
+
+    // The SketchUp export is already at real-world scale (meters) and
+    // glTF's Y-up convention, so — unlike a RealityScan photogrammetry
+    // scan — no scale correction or axis rotation is needed here.
+
+    THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
+    THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
+    THREE.Mesh.prototype.raycast = acceleratedRaycast;
+
+    const overlay = document.getElementById("overlay");
+    const bar = document.getElementById("bar");
+    const pct = document.getElementById("pct");
+    const errbox = document.getElementById("errbox");
+    const creditsStatsEl = document.getElementById("credits-stats");
+    const hud = document.getElementById("hud");
+
+    const app = document.getElementById("app");
+
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      powerPreference: "high-performance",
+      logarithmicDepthBuffer: true,
+    });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
+    renderer.xr.enabled = true;
+    renderer.xr.setReferenceSpaceType("local-floor");
+    app.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0b0c0e);
+    scene.fog = null;
+
+    // Unlike the Vietnam photogrammetry scan (baked lighting, no normals,
+    // rendered unlit), this SketchUp export carries real materials and
+    // normals, so it's lit normally — a soft hemisphere fill plus one
+    // directional "sun" light is enough for an architectural walkthrough.
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x404048, 1.1));
+    const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+    sun.position.set(8, 14, 6);
+    scene.add(sun);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.3));
+
+    // In VR the headset drives the camera's local pose; moving this group
+    // (on teleport) is what actually relocates the player, since three.js
+    // composes the XR camera's world matrix with its parent's.
+    const playerRig = new THREE.Group();
+    scene.add(playerRig);
+
+    const camera = new THREE.PerspectiveCamera(
+      50,
+      window.innerWidth / window.innerHeight,
+      0.05,
+      5000
+    );
+    camera.position.set(10, 8, 10);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.rotateSpeed = 0.75;
+    controls.zoomSpeed = 0.9;
+    controls.screenSpacePanning = true;
+    controls.minDistance = 0.1;
+    controls.maxDistance = 2000;
+
+    let modelRoot = null;
+    let wireOn = false;
+
+    // Remembers whatever angle the visitor last left the camera at, so the
+    // page reopens there instead of the auto-fit view every time.
+    const VIEW_KEY = "mragViewer.camera.v1";
+
+    function saveView() {
+      try {
+        localStorage.setItem(VIEW_KEY, JSON.stringify({
+          position: camera.position.toArray(),
+          target: controls.target.toArray(),
+        }));
+      } catch (e) { /* localStorage unavailable (private mode, etc.) — ignore */ }
+    }
+
+    function loadSavedView() {
+      try {
+        const raw = localStorage.getItem(VIEW_KEY);
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    controls.addEventListener("end", saveView);
+
+    function frameObject(object) {
+      const box = new THREE.Box3().setFromObject(object);
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+
+      const maxDim = Math.max(size.x, size.y, size.z) || 1;
+      const fitDist = (maxDim / 2) / Math.tan((camera.fov * Math.PI / 180) / 2) * 1.4;
+
+      camera.near = Math.max(maxDim / 1000, 0.01);
+      camera.far = maxDim * 50;
+      camera.updateProjectionMatrix();
+
+      controls.target.copy(center);
+      camera.position.set(
+        center.x + fitDist * 0.6,
+        center.y + fitDist * 0.45,
+        center.z + fitDist * 0.6
+      );
+      controls.minDistance = maxDim * 0.005;
+      controls.maxDistance = maxDim * 6;
+      controls.update();
+
+      return { size, center };
+    }
+
+    document.getElementById("btn-credits").addEventListener("click", () => {
+      document.getElementById("credits").classList.toggle("visible");
+    });
+
+    document.getElementById("btn-reset").addEventListener("click", () => {
+      try { localStorage.removeItem(VIEW_KEY); } catch (e) {}
+      if (modelRoot) frameObject(modelRoot);
+    });
+
+    document.getElementById("btn-wire").addEventListener("click", () => {
+      wireOn = !wireOn;
+      if (modelRoot) {
+        modelRoot.traverse((o) => {
+          if (o.isMesh) o.material.wireframe = wireOn;
+        });
+      }
+    });
+
+    const btnFs = document.getElementById("btn-fs");
+    // Fullscreen is unavailable on iOS Safari and inside an iframe that
+    // lacks allow="fullscreen" (the common case when this viewer is
+    // embedded on another site) — hide the control rather than let it
+    // silently fail or throw.
+    if (!document.fullscreenEnabled) {
+      btnFs.style.display = "none";
+    } else {
+      btnFs.addEventListener("click", () => {
+        try {
+          if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+          else document.exitFullscreen();
+        } catch (e) {
+          console.warn("Fullscreen unavailable:", e);
+        }
+      });
+    }
+
+    const isTouch = window.matchMedia("(pointer: coarse)").matches;
+    document.getElementById("hud-instructions").textContent = isTouch
+      ? "drag to orbit | pinch to zoom | two-finger drag to pan"
+      : "drag to orbit | scroll to zoom | right-drag to pan";
+
+    // ---- VR mode: point-and-pinch teleport only (no scale toggle or
+    // flight — the model is already at real-world scale, unlike the
+    // uncalibrated Vietnam photogrammetry scan) ----
+
+    const raycaster = new THREE.Raycaster();
+    raycaster.firstHitOnly = true; // three-mesh-bvh: stop at the nearest hit instead of sorting all of them
+    const _origin = new THREE.Vector3();
+    const _dir = new THREE.Vector3();
+    const _normal = new THREE.Vector3();
+    const _up = new THREE.Vector3(0, 1, 0);
+
+    const reticle = new THREE.Mesh(
+      new THREE.RingGeometry(0.16, 0.22, 32).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: 0x4f9dff, transparent: true, opacity: 0.9, side: THREE.DoubleSide })
+    );
+    reticle.visible = false;
+    scene.add(reticle);
+
+    // A plain black floor extending past the model's own footprint, purely
+    // so there's somewhere to teleport to and walk a full lap around the
+    // building in VR.
+    const GROUND_PLANE_PADDING = 6; // meters of walkable margin beyond the model's footprint, each side
+    let groundPlane = null;
+    let modelBox = null;
+
+    function updateGroundPlane() {
+      if (!modelRoot || !modelBox) return;
+      const center = modelBox.getCenter(new THREE.Vector3());
+      const footprint = Math.max(modelBox.max.x - modelBox.min.x, modelBox.max.z - modelBox.min.z);
+      const planeSize = footprint + GROUND_PLANE_PADDING * 2;
+
+      if (!groundPlane) {
+        groundPlane = new THREE.Mesh(
+          new THREE.PlaneGeometry(1, 1),
+          new THREE.MeshBasicMaterial({ color: 0x000000 })
+        );
+        groundPlane.rotation.x = -Math.PI / 2;
+        scene.add(groundPlane);
+      }
+      groundPlane.scale.set(planeSize, planeSize, 1);
+      groundPlane.position.set(center.x, modelBox.min.y - 0.02, center.z);
+    }
+
+    function teleportSurfaces() {
+      return groundPlane ? [modelRoot, groundPlane] : [modelRoot];
+    }
+
+    const handModelFactory = new XRHandModelFactory();
+    const teleporters = []; // one per hand/controller slot: { targetRay, hand, active, validHit, ray }
+
+    function makeRayLine() {
+      const geo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(0, 0, -1),
+      ]);
+      const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x4f9dff, transparent: true, opacity: 0.7 }));
+      line.scale.z = 3;
+      line.visible = false;
+      return line;
+    }
+
+    function setupTeleporter(index) {
+      const targetRay = renderer.xr.getController(index);
+      const hand = renderer.xr.getHand(index);
+      const grip = renderer.xr.getControllerGrip(index);
+
+      hand.add(handModelFactory.createHandModel(hand, "spheres"));
+
+      const ray = makeRayLine();
+      targetRay.add(ray);
+
+      const entry = { targetRay, hand, active: false, validHit: null, ray };
+      teleporters.push(entry);
+
+      const activate = () => {
+        entry.active = true;
+        ray.visible = true;
+      };
+      const deactivate = () => {
+        entry.active = false;
+        ray.visible = false;
+        reticle.visible = false;
+        if (entry.validHit) playerRig.position.copy(entry.validHit);
+        entry.validHit = null;
+      };
+
+      // Quest 3 hand-tracking: three.js derives these directly from the
+      // index-finger/thumb-tip distance, which is exactly "point and pinch".
+      hand.addEventListener("pinchstart", activate);
+      hand.addEventListener("pinchend", deactivate);
+      // Fallback so the same single gesture works with tracked controllers.
+      targetRay.addEventListener("selectstart", activate);
+      targetRay.addEventListener("selectend", deactivate);
+
+      playerRig.add(targetRay, hand, grip);
+    }
+
+    setupTeleporter(0);
+    setupTeleporter(1);
+
+    function updateTeleportTargets() {
+      for (const entry of teleporters) {
+        if (!entry.active) continue;
+
+        _origin.setFromMatrixPosition(entry.targetRay.matrixWorld);
+        _dir.set(0, 0, -1).transformDirection(entry.targetRay.matrixWorld);
+        raycaster.set(_origin, _dir);
+        raycaster.far = 100; // meters — plenty for walking around one building
+
+        let hitPoint = null;
+        if (modelRoot) {
+          const hits = raycaster.intersectObjects(teleportSurfaces(), true);
+          if (hits.length && hits[0].face) {
+            _normal.copy(hits[0].face.normal).transformDirection(hits[0].object.matrixWorld);
+            if (_normal.y > 0.6) hitPoint = hits[0].point; // only floor-like surfaces, not walls/roof
+          }
+        }
+
+        if (hitPoint) {
+          entry.validHit = hitPoint.clone();
+          entry.ray.scale.z = _origin.distanceTo(hitPoint);
+          entry.ray.material.color.setHex(0x4f9dff);
+          reticle.position.copy(hitPoint).addScaledVector(_up, 0.01);
+          reticle.visible = true;
+        } else {
+          entry.validHit = null;
+          entry.ray.scale.z = 3;
+          entry.ray.material.color.setHex(0xff5555);
+          reticle.visible = false;
+        }
+      }
+    }
+
+    // Spawn placement needs every intersection along the ray (not just the
+    // nearest), so it can look past a pitched roof to the actual ground
+    // below instead of standing the player on the rooftop.
+    const spawnRaycaster = new THREE.Raycaster();
+
+    function placeRigAtSpawn(xz) {
+      const spawn = new THREE.Vector3(xz.x, modelBox.min.y, xz.z);
+      spawnRaycaster.far = modelBox.max.y - modelBox.min.y + 20;
+      spawnRaycaster.set(new THREE.Vector3(xz.x, modelBox.max.y + 10, xz.z), new THREE.Vector3(0, -1, 0));
+      const hits = spawnRaycaster.intersectObject(modelRoot, true);
+      for (const hit of hits) {
+        if (!hit.face) continue;
+        _normal.copy(hit.face.normal).transformDirection(hit.object.matrixWorld);
+        if (_normal.y > 0.5) spawn.copy(hit.point);
+      }
+      playerRig.position.copy(spawn);
+    }
+
+    let savedDesktopState = null;
+
+    function onVRSessionEnd() {
+      scene.add(camera);
+      if (savedDesktopState) {
+        camera.position.copy(savedDesktopState.position);
+        controls.target.copy(savedDesktopState.target);
+      }
+      camera.rotation.set(0, 0, 0);
+      controls.enabled = true;
+      controls.update();
+      reticle.visible = false;
+      for (const entry of teleporters) {
+        entry.active = false;
+        entry.ray.visible = false;
+        entry.validHit = null;
+      }
+    }
+
+    async function enterVR() {
+      if (!modelRoot || !navigator.xr) return;
+      try {
+        const session = await navigator.xr.requestSession("immersive-vr", {
+          optionalFeatures: ["local-floor", "bounded-floor", "hand-tracking"],
+        });
+        savedDesktopState = { position: camera.position.clone(), target: controls.target.clone() };
+        controls.enabled = false;
+
+        placeRigAtSpawn(controls.target);
+        playerRig.add(camera);
+        camera.position.set(0, 0, 0);
+        camera.rotation.set(0, 0, 0);
+
+        session.addEventListener("end", onVRSessionEnd);
+        await renderer.xr.setSession(session);
+      } catch (err) {
+        console.error("Failed to start VR session:", err);
+      }
+    }
+
+    const btnVR = document.getElementById("btn-vr");
+    btnVR.addEventListener("click", enterVR);
+    if (navigator.xr && navigator.xr.isSessionSupported) {
+      navigator.xr.isSessionSupported("immersive-vr")
+        .then((supported) => { btnVR.style.display = supported ? "" : "none"; })
+        .catch(() => { btnVR.style.display = "none"; });
+    }
+
+    const loader = new GLTFLoader();
+    loader.setMeshoptDecoder(MeshoptDecoder);
+
+    loader.load(
+      MODEL_URL,
+      (gltf) => {
+        modelRoot = gltf.scene;
+        modelRoot.traverse((o) => {
+          if (o.isMesh) {
+            o.frustumCulled = true;
+            // Accelerates the per-frame VR teleport raycast against this
+            // mesh from O(n) to O(log n); without it, aiming in VR would
+            // visibly stall the frame.
+            o.geometry.computeBoundsTree();
+          }
+        });
+
+        scene.add(modelRoot);
+        modelBox = new THREE.Box3().setFromObject(modelRoot);
+        frameObject(modelRoot);
+        updateGroundPlane();
+
+        const savedView = loadSavedView();
+        if (savedView) {
+          camera.position.fromArray(savedView.position);
+          controls.target.fromArray(savedView.target);
+          controls.update();
+        }
+
+        let triCount = 0, vertCount = 0;
+        modelRoot.traverse((o) => {
+          if (o.isMesh && o.geometry) {
+            const g = o.geometry;
+            vertCount += g.attributes.position ? g.attributes.position.count : 0;
+            triCount += g.index ? g.index.count / 3 : (g.attributes.position ? g.attributes.position.count / 3 : 0);
+          }
+        });
+        creditsStatsEl.innerHTML = `<b>${Math.round(triCount).toLocaleString()}</b> triangles &middot; <b>${Math.round(vertCount).toLocaleString()}</b> vertices`;
+
+        overlay.classList.add("hidden");
+        setTimeout(() => { overlay.style.display = "none"; }, 550);
+      },
+      (xhr) => {
+        if (xhr.lengthComputable) {
+          const p = Math.min(100, Math.round((xhr.loaded / xhr.total) * 100));
+          bar.style.width = p + "%";
+          pct.textContent = p + "% (" + (xhr.loaded / 1048576).toFixed(1) + " MB)";
+        } else {
+          pct.textContent = (xhr.loaded / 1048576).toFixed(1) + " MB loaded";
+        }
+      },
+      (err) => {
+        console.error(err);
+        pct.style.display = "none";
+        document.querySelector(".bar-track").style.display = "none";
+        errbox.style.display = "block";
+        errbox.textContent = "Failed to load model: " + (err && err.message ? err.message : err);
+      }
+    );
+
+    function resizeToViewport() {
+      if (renderer.xr.isPresenting) return; // WebXR manages the framebuffer size itself
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      if (w === 0 || h === 0) return;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    }
+    window.addEventListener("resize", resizeToViewport);
+    new ResizeObserver(resizeToViewport).observe(document.documentElement);
+
+    let idleTimer = null;
+    function nudgeHud() {
+      hud.style.opacity = "1";
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => { hud.style.opacity = "0.35"; }, 3500);
+    }
+    window.addEventListener("pointerdown", nudgeHud);
+    nudgeHud();
+
+    function render() {
+      if (renderer.xr.isPresenting) {
+        try {
+          updateTeleportTargets();
+        } catch (err) {
+          console.error("VR frame update failed:", err);
+        }
+      } else {
+        controls.update();
+      }
+      renderer.render(scene, camera);
+    }
+    renderer.setAnimationLoop(render);
+  </script>
+</body>
+</html>
