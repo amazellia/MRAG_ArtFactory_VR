@@ -132,6 +132,7 @@
     <button id="btn-credits" title="Credits">&#9432;</button>
     <button id="btn-reset" title="Reset view">&#8634;</button>
     <button id="btn-wire" title="Toggle wireframe">&#9638;</button>
+    <button id="btn-walk" title="Walk mode" style="font-size:11px; font-weight:700;">&#128694;</button>
     <button id="btn-vr" title="Enter VR" style="display:none; font-size:11px; font-weight:700;">VR</button>
     <button id="btn-fs" title="Fullscreen">&#9974;</button>
   </div>
@@ -158,6 +159,7 @@
     import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
     import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
     import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+    import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
     import { XRHandModelFactory } from "three/addons/webxr/XRHandModelFactory.js";
     import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from "three-mesh-bvh";
 
@@ -333,7 +335,18 @@
     const _origin = new THREE.Vector3();
     const _dir = new THREE.Vector3();
     const _normal = new THREE.Vector3();
+    const _normalMatrix = new THREE.Matrix3();
     const _up = new THREE.Vector3(0, 1, 0);
+
+    // Face normals must go through the inverse-transpose (the "normal
+    // matrix"), not the plain world matrix — SketchUp exports routinely
+    // include mirrored/non-uniformly-scaled instances (e.g. a door frame
+    // mirrored for the opposite jamb), and transformDirection() silently
+    // skews those normals, which was misclassifying floor as wall (and
+    // vice versa) right at the doorway.
+    function worldNormal(face, object) {
+      return _normal.copy(face.normal).applyMatrix3(_normalMatrix.getNormalMatrix(object.matrixWorld)).normalize();
+    }
 
     const reticle = new THREE.Mesh(
       new THREE.RingGeometry(0.16, 0.22, 32).rotateX(-Math.PI / 2),
@@ -437,7 +450,7 @@
         if (modelRoot) {
           const hits = raycaster.intersectObjects(teleportSurfaces(), true);
           if (hits.length && hits[0].face) {
-            _normal.copy(hits[0].face.normal).transformDirection(hits[0].object.matrixWorld);
+            worldNormal(hits[0].face, hits[0].object);
             if (_normal.y > 0.6) hitPoint = hits[0].point; // only floor-like surfaces, not walls/roof
           }
         }
@@ -469,7 +482,7 @@
       const hits = spawnRaycaster.intersectObject(modelRoot, true);
       for (const hit of hits) {
         if (!hit.face) continue;
-        _normal.copy(hit.face.normal).transformDirection(hit.object.matrixWorld);
+        worldNormal(hit.face, hit.object);
         if (_normal.y > 0.5) spawn.copy(hit.point);
       }
       playerRig.position.copy(spawn);
@@ -523,6 +536,165 @@
         .catch(() => { btnVR.style.display = "none"; });
     }
 
+    // ---- Walk mode: desktop first-person walkthrough (pointer-lock look,
+    // WASD move), independent of VR. Floor height is re-sampled every
+    // frame via a downward raycast against the model (so stairs/ramps are
+    // followed), and a short forward probe blocks movement into walls
+    // while still letting the player pass through open doorways.
+
+    const EYE_HEIGHT = 1.7; // meters
+    const WALK_SPEED = 2.4; // meters/second
+    const COLLIDE_RADIUS = 0.35; // meters — how close a wall can get before blocking movement
+    const CEILING_CLEARANCE = 0.3; // meters of headroom kept below the roof — walk mode never lets the camera reach the ceiling/top of the building
+    let walkCeilingY = Infinity; // set once the model's height is known
+
+    // The red "DROP HERE" carpet at the building's entrance, picked directly
+    // off the model (floor height ~0.30) — this is the fixed Walk-mode
+    // starting point, not wherever the orbit camera happens to be framed.
+    const WALK_SPAWN_XZ = { x: 23.17, z: -5.80 };
+    const WALK_SPAWN_LOOK_XZ = { x: 19.74, z: -7.70 }; // the open doorway gap's center (x=19.74 wall, gap z -8.3..-7.1), not the wall beside it
+
+    const plControls = new PointerLockControls(camera, renderer.domElement);
+    let walkMode = false;
+    const walkKeys = { forward: false, back: false, left: false, right: false };
+    const _walkPrev = new THREE.Vector3();
+    const _walkDelta = new THREE.Vector3();
+    const _walkDir = new THREE.Vector3();
+    const walkFloorRay = new THREE.Raycaster();
+    const defaultHudText = isTouch
+      ? "drag to orbit | pinch to zoom | two-finger drag to pan"
+      : "drag to orbit | scroll to zoom | right-drag to pan";
+
+    function walkSurfaces() {
+      return groundPlane ? [modelRoot, groundPlane] : [modelRoot];
+    }
+
+    function onWalkKeyDown(e) {
+      switch (e.code) {
+        case "KeyW": case "ArrowUp": walkKeys.forward = true; break;
+        case "KeyS": case "ArrowDown": walkKeys.back = true; break;
+        case "KeyA": case "ArrowLeft": walkKeys.left = true; break;
+        case "KeyD": case "ArrowRight": walkKeys.right = true; break;
+      }
+    }
+    function onWalkKeyUp(e) {
+      switch (e.code) {
+        case "KeyW": case "ArrowUp": walkKeys.forward = false; break;
+        case "KeyS": case "ArrowDown": walkKeys.back = false; break;
+        case "KeyA": case "ArrowLeft": walkKeys.left = false; break;
+        case "KeyD": case "ArrowRight": walkKeys.right = false; break;
+      }
+    }
+
+    // Keeps the camera's feet on the floor directly beneath it (including
+    // stairs/ramps) rather than letting it fly or sink — same approach as
+    // the VR ground-follow, just driven by the walk camera instead of the
+    // headset pose.
+    const MAX_STEP_UP = 0.6; // meters — largest single-frame rise snapToFloor will follow; stops it from
+                              // latching onto the roof/ceiling (or a distant mezzanine) instead of the
+                              // real floor just because the ray's +5m headroom reaches that high too
+
+    function snapToFloor() {
+      if (!modelRoot) return;
+      walkFloorRay.set(new THREE.Vector3(camera.position.x, camera.position.y + 5, camera.position.z), new THREE.Vector3(0, -1, 0));
+      walkFloorRay.far = 30;
+      const hits = walkFloorRay.intersectObjects(walkSurfaces(), true);
+      const maxFloorY = (camera.position.y - EYE_HEIGHT) + MAX_STEP_UP;
+      for (const hit of hits) {
+        if (!hit.face || hit.point.y > maxFloorY) continue;
+        worldNormal(hit.face, hit.object);
+        if (_normal.y > 0.5) {
+          camera.position.y = Math.min(hit.point.y + EYE_HEIGHT, walkCeilingY);
+          return;
+        }
+      }
+    }
+
+    function updateWalk(dt) {
+      if (!modelRoot) return;
+      const step = WALK_SPEED * dt;
+      _walkPrev.copy(camera.position);
+
+      if (walkKeys.forward) plControls.moveForward(step);
+      if (walkKeys.back) plControls.moveForward(-step);
+      if (walkKeys.right) plControls.moveRight(step);
+      if (walkKeys.left) plControls.moveRight(-step);
+
+      // Undo the horizontal part of the move if it just crossed within
+      // COLLIDE_RADIUS of a near-vertical surface (a wall). Doorways have
+      // no wall there, so walking through one is unaffected.
+      _walkDelta.subVectors(camera.position, _walkPrev);
+      _walkDelta.y = 0;
+      const dist = _walkDelta.length();
+      if (dist > 1e-5) {
+        _walkDir.copy(_walkDelta).normalize();
+        raycaster.set(_walkPrev, _walkDir);
+        raycaster.far = dist + COLLIDE_RADIUS;
+        const hits = raycaster.intersectObjects(walkSurfaces(), true);
+        if (hits.length && hits[0].face) {
+          worldNormal(hits[0].face, hits[0].object);
+          if (Math.abs(_normal.y) < 0.4) {
+            camera.position.x = _walkPrev.x;
+            camera.position.z = _walkPrev.z;
+          }
+        }
+      }
+
+      snapToFloor();
+    }
+
+    plControls.addEventListener("lock", () => {
+      walkMode = true;
+      controls.enabled = false;
+      document.getElementById("hud-instructions").textContent = "WASD / arrows to walk · mouse to look · Esc to exit";
+    });
+    plControls.addEventListener("unlock", () => {
+      walkMode = false;
+      walkKeys.forward = walkKeys.back = walkKeys.left = walkKeys.right = false;
+      controls.enabled = true;
+      _walkDir.set(0, 0, -1).applyQuaternion(camera.quaternion);
+      controls.target.copy(camera.position).addScaledVector(_walkDir, 3);
+      controls.update();
+      document.getElementById("hud-instructions").textContent = defaultHudText;
+    });
+
+    // Walk mode always starts at the entrance (the red "DROP HERE" carpet),
+    // facing into the building — not wherever the free-orbit camera happens
+    // to be framed, which can be far outside the model's walkable footprint.
+    function resetWalkToEntrance() {
+      camera.position.set(WALK_SPAWN_XZ.x, EYE_HEIGHT, WALK_SPAWN_XZ.z);
+      const lookDir = new THREE.Vector3(
+        WALK_SPAWN_LOOK_XZ.x - WALK_SPAWN_XZ.x,
+        0,
+        WALK_SPAWN_LOOK_XZ.z - WALK_SPAWN_XZ.z
+      ).normalize();
+      camera.lookAt(
+        WALK_SPAWN_XZ.x + lookDir.x,
+        EYE_HEIGHT,
+        WALK_SPAWN_XZ.z + lookDir.z
+      );
+      // PointerLockControls.moveForward/moveRight steer off camera.matrix,
+      // which only gets refreshed by the renderer's own per-frame
+      // updateMatrixWorld() — without forcing it here, the first step(s)
+      // after this teleport-style reset would still move along whatever
+      // direction the camera had *before* it, not the entrance-facing one
+      // just set above.
+      camera.updateMatrix();
+      snapToFloor();
+    }
+
+    document.getElementById("btn-walk").addEventListener("click", () => {
+      if (renderer.xr.isPresenting || !modelRoot) return;
+      if (walkMode) {
+        plControls.unlock();
+      } else {
+        resetWalkToEntrance();
+        plControls.lock();
+      }
+    });
+    document.addEventListener("keydown", onWalkKeyDown);
+    document.addEventListener("keyup", onWalkKeyUp);
+
     const loader = new GLTFLoader();
     loader.setMeshoptDecoder(MeshoptDecoder);
 
@@ -537,11 +709,18 @@
             // mesh from O(n) to O(log n); without it, aiming in VR would
             // visibly stall the frame.
             o.geometry.computeBoundsTree();
+          } else if (o.isLineSegments || o.isLine || o.isPoints) {
+            // SketchUp's exported edge/outline overlay (e.g. "mesh-skp-edges")
+            // has no real surface, but Raycaster still tests it like any other
+            // object — without this it gets hit by the floor-follow, wall-
+            // collision and VR teleport raycasts and reports bogus points.
+            o.raycast = () => {};
           }
         });
 
         scene.add(modelRoot);
         modelBox = new THREE.Box3().setFromObject(modelRoot);
+        walkCeilingY = modelBox.max.y - CEILING_CLEARANCE;
         frameObject(modelRoot);
         updateGroundPlane();
 
@@ -604,12 +783,21 @@
     window.addEventListener("pointerdown", nudgeHud);
     nudgeHud();
 
+    const clock = new THREE.Clock();
+
     function render() {
+      const dt = clock.getDelta();
       if (renderer.xr.isPresenting) {
         try {
           updateTeleportTargets();
         } catch (err) {
           console.error("VR frame update failed:", err);
+        }
+      } else if (walkMode) {
+        try {
+          updateWalk(dt);
+        } catch (err) {
+          console.error("Walk frame update failed:", err);
         }
       } else {
         controls.update();

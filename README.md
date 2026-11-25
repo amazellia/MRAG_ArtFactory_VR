@@ -43,7 +43,11 @@ Static only — upload `index.html`, `models/`, and `assets/` as-is to GitHub Pa
 ## Controls
 
 - Drag to orbit, scroll to zoom, right-drag to pan (touch: drag to orbit, pinch to zoom, two-finger drag to pan)
-- Bottom-right buttons: credits, reset view, toggle wireframe, VR (hidden unless the browser reports a connected VR headset), fullscreen
+- Bottom-right buttons: credits, reset view, toggle wireframe, Walk mode, VR (hidden unless the browser reports a connected VR headset), fullscreen
+
+## Walk mode
+
+The walk (🚶) button drops you at the building's entrance — the red "drop here" carpet — and locks the mouse for first-person look (WASD / arrow keys to move, mouse to look, Esc to exit). Floor height follows the model under your feet, walls block movement while doorways stay open, and a hard ceiling clamp keeps you from ever climbing onto the roof.
 
 ## VR mode
 
